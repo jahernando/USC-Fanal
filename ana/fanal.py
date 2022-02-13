@@ -3,7 +3,7 @@ import pandas as pd
 
 import scipy.constants as constants
 import scipy.stats     as stats
-import scipy.optimize  as optimize
+#import scipy.optimize  as optimize
 
 import core.utils as ut
 import core.efit  as efit
@@ -22,23 +22,30 @@ keys       = ['E', 'num_tracks', 'blob2_E', 'RoI']
 varnames   = ['E', 'num_tracks', 'blob2_E', 'E']
 varranges  = [erange, (1., 1.1), (0.4, np.inf), eroi]
 
-blindvar   = 'track0_E'
-blindrange = (2.420, 2.520)
+#label   = 'track0_E'
+erange   = (2.4, 2.7)
+eroi     = (2.43,  2.48)
+eblob2   = 0.4
+#bins    = 100
+
+abundace = 0.9
+Qbb      = 2458 # keV Qbb value
+W        = 135.9
 
 
-def half_life(nbb, exposure, eff, acc = 0.8, W = 136):
+def half_life(nbb, exposure, eff, abundance = 0.9, W = 135.9):
     """  Compute the half-life time
     inputs:
-        nbb     : float, number of events in RoI
-        exposure: float, (kg y)
-        eff     : signal efficiency, (in fraction)
-        acc     : float, isotope fraction (0.9)
-        W       : float, Atomic weight, (136 g/mol for 136Xe)
+        nbb       : float, number of signal events in RoI
+        exposure  : float, (kg y)
+        eff       : total signal efficiency, (in fraction)
+        abundance : float, isotope fraction (0.9)
+        W         : float, Atomic weight, (135.9 g/mol for 136Xe)
     returns:
-        tau     : float, half-life (y)
+        tau       : float, half-life (y)
     """
     NA   = constants.Avogadro
-    tau  = 1e3 * eff * acc * (exposure / nbb) * (NA / W) * np.log(2.)
+    tau  = 1e3 * eff * abundance * (exposure / nbb) * (NA / W) * np.log(2.)
     return tau
 
 
@@ -59,21 +66,62 @@ def efficiencies(df, names = varnames, ranges = varranges):
     ueff = [x[1] for x in effs]
     return eff, ueff
 
-
-def blind_mc_samples(mcs, blindvar = blindvar, blindrange = blindrange):
-    """ return MC sample with a blind region in the variable *blindvar* and range *blindrange*
-    inputs:
-        mcs        : tuple(DF), DFs with the MC samples
-        blindvar   : str, name of the variable used to blind
-        blindrange : tuple(float, float), range of the variable to blind
-    returns:
-        mcs        : tuple(DF), blind DFs
+def selection(df, varnames, varranges, full_output = False):
     """
-    bmcs = []
-    for mc in mcs:
-        sel = ~ut.selection(mc, blindvar, blindrange)
-        bmcs.append(mc[sel])
-    return bmcs
+    
+    Aply a list of selection in sequence.
+    Returns the total selection or the sequence if full_output is True
+
+    Parameters
+    ----------
+    df          : DataFrame, data
+    varnames    : (tuple of string), list of the variables
+    varranges   : (tuple of the ranges), accepted range for each variable
+    full_output : bool, return the sequence of selections, default = False
+
+    Returns
+    -------
+    sels : array(bool), total selection, if full_output is True a 
+          list(array(bool)) with the consecutive selections
+
+    """
+    sel, sels =  None, []
+    for i, varname in enumerate(varnames):
+        isel = ut.in_range(df[varname].values, varranges[i])
+        sel  = isel if sel is None else sel & isel
+        sels.append(sel)
+    out = sels if full_output else sel
+    return out
+
+def selection_analysis(xdf,  
+                       xroi   = eroi, 
+                       eblob2 = eblob2):
+    sel = (xdf.num_tracks == 1) & (xdf.E >= xroi[0]) & \
+        (xdf.E < xroi[1]) & (xdf.blob2_E > eblob2)
+    return sel
+
+
+
+def selection_blind(df, eroi = eroi, eblob2 = eblob2):
+    sel0 = (df.track0_E >= eroi[0]) &  (df.track0_E < eroi[1])
+    sel1 = (df.blob2_E  > eblob2)
+    sel  = np.logical_or(sel0, sel1)
+    return ~sel
+
+# def blind_mc_samples(mcs, blindvar = blindvar, blindrange = blindrange):
+#     """ return MC sample with a blind region in the variable *blindvar* and range *blindrange*
+#     inputs:
+#         mcs        : tuple(DF), DFs with the MC samples
+#         blindvar   : str, name of the variable used to blind
+#         blindrange : tuple(float, float), range of the variable to blind
+#     returns:
+#         mcs        : tuple(DF), blind DFs
+#     """
+#     bmcs = []
+#     for mc in mcs:
+#         sel = ~ut.selection(mc, blindvar, blindrange)
+#         bmcs.append(mc[sel])
+#     return bmcs
 
 
 def generate_mc_experiment(mcs, nevents):
@@ -115,11 +163,11 @@ def fit_ell(data, mcs, ns, varname = 'E', bins = 100, varrange = erange):
 
     # get the data variable
     sel = ut.selection(data, varname, varrange)
-    x = data[varname][sel]
+    x   = data[varname][sel]
 
     # fit
     result = ell.best_estimate(x, *ns)
-    nsbest = result.x
+    #nsbest = result.x
 
     return result, x, ell
 
@@ -159,27 +207,6 @@ def plot_fit_ell(x, par, pdf, bins = 100, parnames = ssamples):
 
     return
 
-# def experiment_selection(data, mcs, level_data = -1):
-#
-#     varnames   = ['E', 'num_tracks', 'blob2_E']
-#     varranges  = [(2.400, 2.650), (1., 1.1), (0.4, np.inf)]
-#
-#     level_mc = min(1, level_data) # MC level selction E in range, 1 track
-#
-#     sels = [ut.selections(mc, varnames, varranges) for mc  in mcs]
-#     effs = [ut.efficiency(sel[level_data])[0]      for sel in sels]
-#     xmcs = [mc[sel[level_mc]]                      for mc, sel in zip(mcs, sels)]
-#     xdat = data[ut.selections(data, varnames, varranges)[level_data]]
-#
-#     return xdat, xmcs, effs
-
-#
-# def experiment_fit(data, mcs, nevts, level_data = 2, plot = True):
-#
-#     tdat, tmcs, effs = experiment_selection(data, mcs, level_data) # sample after selections
-#     ns_exp  = [ni * eff for ni, eff in zip(nevts, effs)] # expected number of events after selection
-#     result  = fit_ell(tdat, tmcs, ns_exp)
-#     return (*result, ns_exp)
 
 
 def ana_experiment(data, mcs, nevts, level_data = 2):
