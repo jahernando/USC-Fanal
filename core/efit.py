@@ -193,3 +193,35 @@ class ExtComPDF(ComPDF):
         xs = [_rv() for i in range(size)]
         xs = xs[0] if size == 1 else xs
         return xs
+
+
+class ConstrainedExtComPDF(ExtComPDF):
+    
+    def __init__(self, pdfs, ns, uns):
+        """ constructor with a list of pdfs (must have the method, pdf, logpdf, rvs)
+        and the expected number of events for each pdf
+        inputs:
+            pdfs: list(pdf), pdf is an PDF object with methods pdf, logpdf, and rvs
+            ns  : list(float), number of expected events in each pdf
+        """
+        ComPDF.__init__(self, pdfs, *ns)
+        self.ns   = np.copy(ns)
+        self.uns  = np.copy(uns) # sigma uncertainties
+        return
+
+
+    def loglike(self, x, *ns):
+        """ return extended -2 log likelihood, for x-data, ns is the list of expected number of events of each sample,
+        inputs:
+            x, np.array(float), data
+            ns, tuple(float), number of events in each sample
+                (is ns is empty, the values in the self object will be used)
+        """
+        lp   = ExtComPDF.loglike(self, x, *ns)
+        lpcs = [stats.norm.logpdf(n, n0, u) for n, n0, u in
+                zip(ns, self.ns, self.uns) if u !=  0.]
+        #print('Gauss constrain: ', lpcs)
+        lp  += np.sum(lpcs)
+        return lp
+
+    

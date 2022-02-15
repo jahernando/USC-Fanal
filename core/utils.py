@@ -117,3 +117,14 @@ def selections(df, varnames, varranges):
         sel  = isel if sel is None else sel & isel
         sels.append(sel)
     return sels
+
+
+def sample_selection(df, varname, varrange):
+    sel = selection(df, varname, varrange)
+    sdf = df[sel]
+    return sdf, sel
+
+def sample_selections(df, varnames, varranges):
+    sel = selections(df, varnames, varranges)[-1]
+    sdf = df[sel]
+    return sdf, sel
