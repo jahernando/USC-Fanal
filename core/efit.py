@@ -104,7 +104,53 @@ class ComPDF:
         return np.sum(np.log(self.pdf(x, *ns)))
 
 
-    def best_estimate(self, x, *ns):
+    def best_estimate(self, x, *ns, mask = None):
+        """ best estimate of the number of events, ns, from the data x,
+            obtained by minimising -2 log likelihood.
+        inputs:
+            x  : np.array(float), data
+            ns : tuple(float), list with the initial guess of the number of events in each sammple
+        returns:
+            res : A ResultFit object (see minimize function in scipy module otimize)
+        """
+
+        m, fi  = self.weights(*ns)
+        p0     = m * fi
+        
+        fun    = lambda par: -2. * self.loglike(x, *par)
+        bounds = len(ns) * ((0., np.inf),)
+        
+        def place_mask(mask):
+            mask  = np.array(mask, bool)
+            par   = np.copy(p0)
+            assert len(mask) == len(p0), \
+                'required same number of positions in the mask as parameters'
+            mp0     = par[mask]
+            bounds0 = [bound for bound, imask in zip(bounds, mask) if imask]
+        
+            def mfun(mpar):
+                par[mask] = mpar
+                return fun(par)
+                
+            return mfun, mp0, bounds0
+
+        cfun, cp0, cbounds = (fun, p0, bounds) if mask is None else place_mask(mask)
+
+        res = optimize.minimize(cfun, cp0, bounds = cbounds)
+        
+        if (mask != None):
+            best = np.copy(p0)
+            j = 0
+            for i, imask in enumerate(mask):
+                if imask: 
+                    best[i] = res.x[j]
+                    j = j+1
+            res.x = best
+        
+        return res
+
+
+    def __best_estimate(self, x, *ns):
         """ best estimate of the number of events, ns, from the data x,
             obtained by minimising -2 log likelihood.
         inputs:

@@ -1,4 +1,6 @@
 import numpy             as np
+from functools import reduce
+#from collections.abc import Iterable
 
 
 #--- general utilies
@@ -9,18 +11,30 @@ def remove_nan(vals : np.array) -> np.array:
     return vals[~np.isnan(vals)]
 
 
-def in_range(vals : np.array, range : tuple = None, upper_limit_in = False) -> np.array(bool):
+def in_range(vals : np.array,
+             range : tuple = None,
+             upper_limit_in = False) -> np.array(bool):
     """ returns a np.array(bool) with the elements of val that are in range
     inputs:
         vals : np.array
-        range: tuple(x0, x1)
+        range: None, (x0, x1) or x0: None, all values; (c1, c1): x >= x0, x <xf;
+               x0: x == x0                 
+        upper_limit_int, if True x <= xf
     returns
-        np.array(bool) where True/False indicates if the elements of vals is in rage
+        sel : np.array(bool) where True/False indicates if the elements of vals are
+        in range
     """
-    if (range is None): return vals >= np.min(vals)
-    sel1 = (vals >= range[0])
-    sel2 = (vals <= range[1]) if upper_limit_in else (vals < range[1])
-    return sel1 & sel2
+
+    if (range is None): 
+        return vals >= np.min(vals)
+
+    if (isinstance(range, list) or (isinstance(range, tuple))):
+        sel1 = (vals >= range[0])
+        sel2 = (vals <= range[1]) if upper_limit_in else (vals < range[1])
+        return sel1 & sel2
+    
+    return vals == range
+
 
 def centers(xs : np.array) -> np.array:
     """ returns the center between the participn
@@ -119,12 +133,30 @@ def selections(df, varnames, varranges):
     return sels
 
 
-def sample_selection(df, varname, varrange):
-    sel = selection(df, varname, varrange)
-    sdf = df[sel]
-    return sdf, sel
+def _selection(df, varname, varrange, oper = np.logical_and):
+    """ apply the selection df.varname in a range, varange
+    inputs:
+        df       : dataFrame
+        varname  : str, name of the variable int he DF
+        varrange : tuple(float, float), range of the selection, all (-np.inf, np.inf)
+        oper     : bool operation, default and
+    returns:
+        sel      : np.array(bool) same same of DF with True/False
+                   if the item fulfull variable value (varname) inside the range (varrange)
+    """
+    
+    _isiter = lambda x: isinstance(x, list) or isinstance(x, tuple)
+    if _isiter(varname):
+        assert len(varname) == len(varrange), \
+            'required same length of variables and ranges'
+        sels = [_selection(df, ivar, ivarran) for ivar, ivarran \
+                      in zip(varname, varrange)]
+        return reduce(oper, sels)
+    
+    return in_range(df[varname], varrange)
+    
 
-def sample_selections(df, varnames, varranges):
-    sel = selections(df, varnames, varranges)[-1]
-    sdf = df[sel]
-    return sdf, sel
+def _select_sample(df, varname, varrange):
+    
+    return df[_selection(df, varname, varrange)]
+

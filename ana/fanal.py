@@ -213,13 +213,12 @@ def fit_ell(data,
     result = ell.best_estimate(x, *ns)
     #nsbest = result.x
 
-    return result, x, ell, pdfs
+    return result, x, ell
 
 
 def plot_fit_ell(x,
                  par, 
-                 pdf, 
-                 pdfs = None,
+                 ell, 
                  bins = 100,
                  parnames = ssamples,
                  plot_residuals = True):
@@ -245,19 +244,14 @@ def plot_fit_ell(x,
                  marker = 'o', ls = '', label = 'data')
 
     label  = 'ELL fit \n'
-    for si, ni in zip(parnames, par):
-        if (pdfs == None):
-            label += ' {:s} : {:6.2f} \n'.format(si, ni)
-    plt.plot(centers, factor * pdf(centers, *par), label = label)
+    plt.plot(centers, factor * ell.pdf(centers, *par), label = label)
 
-    if (pdfs != None):
-        i = 0
-        for ni, ipdf in zip(par, pdfs):
-            factor = ni * (centers[1] - centers[0])
-            label  = ' {:s} : {:6.2f} \n'.format(ssamples[i], ni)
-            plt.plot(centers, factor * ipdf.pdf(centers), label = label)
-            i += 1
-
+    i = 0
+    for ni, ipdf in zip(par, ell.pdfs):
+        factor = ni * (centers[1] - centers[0])
+        label  = ' {:s} : {:6.2f} \n'.format(ssamples[i], ni)
+        plt.plot(centers, factor * ipdf.pdf(centers), label = label)
+        i += 1
     plt.legend(); plt.grid();
 
     if (not plot_residuals): return
@@ -266,7 +260,7 @@ def plot_fit_ell(x,
     divider = make_axes_locatable(ax)
     ax2 = divider.append_axes("bottom", size = '20%', pad = 0)
     ax.figure.add_axes(ax2)
-    fun = lambda x, *p : factor * pdf(x, *p)
+    fun = lambda x, *p : factor * ell.pdf(x, *p)
     pltext.hresiduals(x, bins, fun, par)
 
     return
@@ -389,20 +383,19 @@ def ana_experiment(data,
                                         mc_level = mc_level, verbose = verbose)
     nns  = [eff * ni  for eff, ni  in zip(effs, nevts)]
     unns = None if unevts == None else [eff * uni for eff, uni in zip(effs, unevts)]
-    result, enes, ell, pdfs  = fit_ell(anadata, anamcs, nns, unns,
-                                       varname = varname, varrange = varrange, 
-                                       bins = bins)
-    ns_esp = result.x
+    result, enes, ell  = fit_ell(anadata, anamcs, nns, unns,
+                                 varname = varname, varrange = varrange, 
+                                 bins = bins)
     
     if (verbose):
         print('Initial       Events : {:6.2f}, {:6.2f}, {:6.2f}'.format(* nns))
         if (unns != None):
             print('Uncertainties Events : {:6.2f}, {:6.2f}, {:6.2f}'.format(*unns))
         print('Fit success          : ', result.success)
-        print('Estimated     Events : {:6.2f}, {:6.2f}, {:6.2f}'.format(*ns_esp))
-        plot_fit_ell(enes, ns_esp, ell.pdf, pdfs)
+        print('Estimated     Events : {:6.2f}, {:6.2f}, {:6.2f}'.format(*result.x))
+        plot_fit_ell(enes, result.x, ell)
     
-    return result, enes, ell, pdfs
+    return result, enes, ell
     
 
 #----------------
