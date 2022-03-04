@@ -1,6 +1,8 @@
 import numpy  as np
 import pandas as pd
 
+from collections import namedtuple
+
 import scipy.constants as constants
 import scipy.stats     as stats
 #import scipy.optimize  as optimize
@@ -8,10 +10,9 @@ import scipy.stats     as stats
 import core.utils as ut
 import core.efit  as efit
 
-
-import core.pltext as pltext
-import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import make_axes_locatable
+#import core.pltext as pltext
+#import matplotlib.pyplot as plt
+#from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
 ssamples = [r'$\beta\beta0\nu$', r'$^{214}$Bi', r'$^{208}$Tl']
@@ -28,12 +29,13 @@ eroi     = (2.43,  2.48)
 eblob2   = 0.4
 #bins    = 100
 
+NA       = constants.Avogadro
 abundace = 0.9
 Qbb      = 2458 # keV Qbb value
 W        = 135.9
 
 
-def half_life(nbb, exposure, eff, abundance = 0.9, W = 135.9):
+def half_life(nbb, exposure, eff, abundance = abundace, W = W):
     """  Compute the half-life time
     inputs:
         nbb       : float, number of signal events in RoI
@@ -44,62 +46,8 @@ def half_life(nbb, exposure, eff, abundance = 0.9, W = 135.9):
     returns:
         tau       : float, half-life (y)
     """
-    NA   = constants.Avogadro
     tau  = 1e3 * eff * abundance * (exposure / nbb) * (NA / W) * np.log(2.)
     return tau
-
-
-def efficiencies(df, names = varnames, ranges = varranges):
-    """ returns the efficiencies and its uncertatines for a serie of selections
-    inputs:
-        df    : DF
-        names : tuple(str), names of the variables to select a given range
-        ranges: tuple( (float, float), ), ranges of the variables
-    returns:
-        eff   : tuple(float), efficiency of each cut in the serie
-        ueff  : tuple(float), uncertainty of the efficiency in each cut of the serie
-    """
-
-    sels = ut.selections(df, names, ranges)
-    effs = [ut.efficiency(sel) for sel in sels]
-    eff  = [x[0] for x in effs]
-    ueff = [x[1] for x in effs]
-    return eff, ueff
-
-def selection(df, varnames, varranges, full_output = False):
-    """
-    
-    Aply a list of selection in sequence.
-    Returns the total selection or the sequence if full_output is True
-
-    Parameters
-    ----------
-    df          : DataFrame, data
-    varnames    : (tuple of string), list of the variables
-    varranges   : (tuple of the ranges), accepted range for each variable
-    full_output : bool, return the sequence of selections, default = False
-
-    Returns
-    -------
-    sels : array(bool), total selection, if full_output is True a 
-          list(array(bool)) with the consecutive selections
-
-    """
-    sel, sels =  None, []
-    for i, varname in enumerate(varnames):
-        isel = ut.in_range(df[varname].values, varranges[i])
-        sel  = isel if sel is None else sel & isel
-        sels.append(sel)
-    out = sels if full_output else sel
-    return out
-
-#def selection_analysis(xdf,  
-#                       xroi   = eroi, 
-#                       eblob2 = eblob2):
-#    sel = (xdf.num_tracks == 1) & (xdf.E >= xroi[0]) & \
-#        (xdf.E < xroi[1]) & (xdf.blob2_E > eblob2)
-#    return sel
-
 
 
 def selection_blind(df, eroi = eroi, eblob2 = eblob2):
@@ -123,295 +71,443 @@ def selection_blind(df, eroi = eroi, eblob2 = eblob2):
     sel  = np.logical_or(sel0, sel1)
     return ~sel
 
-# def blind_mc_samples(mcs, blindvar = blindvar, blindrange = blindrange):
-#     """ return MC sample with a blind region in the variable *blindvar* and range *blindrange*
-#     inputs:
-#         mcs        : tuple(DF), DFs with the MC samples
-#         blindvar   : str, name of the variable used to blind
-#         blindrange : tuple(float, float), range of the variable to blind
-#     returns:
-#         mcs        : tuple(DF), blind DFs
-#     """
-#     bmcs = []
-#     for mc in mcs:
-#         sel = ~ut.selection(mc, blindvar, blindrange)
-#         bmcs.append(mc[sel])
-#     return bmcs
 
-
-def generate_mc_experiment(mcs, nevts, unevts = None):
+def generate_mc_experiment(mcs, nevts):
     """ generate a MC experiment with the mcs samples, mcs, and the events in each sample, nevents
     inputs  :
         mcs     : tuple(DF), DFs with the mc samples
         nevents : tuple(int), number of events to select in each sample
-        unevts  : tuple(float) or None, constrain the input events with a gaussian of sigma unevts
     returns :
         mc      : DF, DF with the mix of number event of events, nevents, of the initial samples, mcs
     """
-    unevts = len(nevts) * [None,] if unevts == None else unevts
-    #print(unevts)
-    #nns  = [stats.poisson.rvs(ni, size = 1)[0] for ni in nevents]
-    def _ni(ni, un):
-        nk = ni if un == None else stats.norm.rvs(ni, un, size = 1)[0]
-        return stats.poisson.rvs(nk, size = 1)[0]
-    nns  = [_ni(ni, un) for ni, un in zip(nevts, unevts)]
-    #print(nns)
+    def _ni(ni):
+        return stats.poisson.rvs(ni, size = 1)[0]
+    nns  = [_ni(ni) for ni in nevts]
     xmcs = [mc.sample(n = ni) for mc, ni in zip(mcs, nns)] # sample ni events of mc-sample mci
     mc   = pd.concat(xmcs) # concatenate all background to generate a mc sample that mimics the data-blind sample
     return mc
 
 
-def fit_ell(data,
-            mcs,
-            ns,
-            uns = None,
-            varname = 'E',
+
+def get_ell(mcs, 
+            refnames,
+            refranges,
+            varname  = 'E',
             varrange = erange,
-            bins = 150):
+            bins     = 100):
     """
+    Construct a Composite PDF object
     
-    Fit to the number of events in samples, the varaible *varname* 
-    in *varrange* using the data DF and as templates the mcs samples
-    Use as initial parameters *ns* with optional uncertainties *uns*, 
-    pdfs are binned in *bins* number of bins
 
     Parameters
     ----------
-    data     : dataframe, data, include variable *varname*
-    mcs      : tuple of DF, mc data frames to define the templates pdfs for each sample
-    ns       : tuple of floats, the number of initual number of events to fit in each sample
-    uns      : tuple of floats, optionnal, uncertainties of the number of events used as constrains, 
-                    if False not contrain
-    varname  : string, name of the variable to fit, default 'E'.
-    varrange : (float, float), range of the variable to fit, default *erange*
-    bins     : (int), number of bins of the pdfs, default is 100
+    mcs       : tuple(DataFrames), data frames of the mc samples
+    refnames  : tuple(str), list of the variables of the selection to create the pdfs
+    refranges : tuple((float, float)), list of the ranges of the selection to create the pdfs
+    varname   : str, name of the variable of the pdf, The default is 'E'.
+    varrange  : (float, float), range of the pdf variable
+    bins      : int, number of bins of the histograms to create the pdfs
 
     Returns
     -------
-    result : object, results of the fit
-    x      : array,  best paramerters - fit result
-    ell    : object, Extended LikeLihood object, to plot likelihood for example,
-             see *efit* module
-    pdfs   : tuple(pdfs), templated pdfs for each sample
-
-    """
-
-    # generate pdfs from the MC
-    #print('pdf variable : ', varname, varrange, bins)
-    pdfs = [stats.rv_histogram(np.histogram(mc[varname], bins, range = varrange)) 
-            for mc in mcs]
-
-    # generate ELL object with the PDFs
-    ell  = efit.ExtComPDF(pdfs, *ns) if uns ==  None else \
-        efit.ConstrainedExtComPDF(pdfs, ns, uns)
-
-    # get the data variable
-    sel = ut.selection(data, varname, varrange)
-    x   = data[varname][sel]
-
-    # fit
-    result = ell.best_estimate(x, *ns)
-    #nsbest = result.x
-
-    return result, x, ell
-
-
-def plot_fit_ell(x,
-                 par, 
-                 ell, 
-                 bins = 100,
-                 parnames = ssamples,
-                 plot_residuals = True):
-    """ plot the data x, and superimposed the pdf with parameters (par)
-    inputs:
-        x    : np.array(float), data to plot
-        par  : tuple(float), parameters of the pdf
-        pdf  : function, pdf(x, *par), the pdf values of the distribution along x
-        pdfs : tuple(pdfs), the mc pdfs for each sample
-        parnames: tuple(str), list of the parameters (and samples) for the legend
-    """
-
-    subplot = pltext.canvas(1, 1, 8, 10)
-    subplot(1)
-
-    counts, edges = np.histogram(x, bins);
-    centers = 0.5 * (edges[1:] + edges[:-1])
-    ecounts = np.sqrt(counts)
-    sel     = ecounts > 0
-    nn      = np.sum(par)
-    factor  = nn * (centers[1] - centers[0])
-    plt.errorbar(centers[sel], counts[sel], yerr = ecounts[sel], 
-                 marker = 'o', ls = '', label = 'data')
-
-    label  = 'ELL fit \n'
-    plt.plot(centers, factor * ell.pdf(centers, *par), label = label)
-
-    i = 0
-    for ni, ipdf in zip(par, ell.pdfs):
-        factor = ni * (centers[1] - centers[0])
-        label  = ' {:s} : {:6.2f} \n'.format(ssamples[i], ni)
-        plt.plot(centers, factor * ipdf.pdf(centers), label = label)
-        i += 1
-    plt.legend(); plt.grid();
-
-    if (not plot_residuals): return
-    
-    ax = plt.gca()
-    divider = make_axes_locatable(ax)
-    ax2 = divider.append_axes("bottom", size = '20%', pad = 0)
-    ax.figure.add_axes(ax2)
-    fun = lambda x, *p : factor * ell.pdf(x, *p)
-    pltext.hresiduals(x, bins, fun, par)
-
-    return
-
-
-def ana_samples(data, 
-                mcs, 
-                varnames   = varnames[:-1],
-                varranges = varranges[:-1],
-                mc_level   = -1,
-                verbose    = True):
+    ell      : object, Extended Maximum LL object to do a fit to combined pdfs
     """
     
-    Return the sample to analysis after a selection in the variables *varnames* 
-    in ranges *varranges*
+    refmcs = [ut.selection_sample(mc, refnames, refranges) for mc in mcs]
 
+    # generate the PDFs using the blind mc samples
+    histos   = [np.histogram(mc[varname], bins, range = varrange) for mc    in refmcs]
+    pdfs     = [stats.rv_histogram(histo)                         for histo in histos]
+    ell      = efit.ExtComPDF(pdfs)
+    
+    return ell
+
+
+def prepare_fit_ell(mcs, 
+                    nevts,
+                    varnames,
+                    varranges,
+                    refnames = [],
+                    refranges = [],
+                    varname  = 'E',
+                    varrange = erange,
+                    bins     = 100):
+    """
+    
     Parameters
     ----------
-    data      : DataFrame, data
-    mcs       : tuple(DataFrame), mc data frames for the different samples
-    varnames  : tuple(float), list of the variables names of the selection
-    varranges : tuple( (float, float)), list of the variable ranges of the selection
-    mc_level  : int, reduce the selection for mc samples to get more stats for the pdfs
-                a given level, default = -1
-    verbose   : bool, print into
+    mcs       : tuple(DataFrames), data frames of the mc samples
+    varnames  : tuple(str), list of the variables of the selection
+    varranges : tuple((float, float)), list of the ranges of the selection
+    refnames  : tuple(str), list of the variables of the selection to create the pdfs.
+        If empty, the same as varnames
+    refranges : tuple((float, float)), list of the ranges of the selection to create the pdfs.
+        If empty, the same as varranges
+    varname   : str, name of the variable of the pdf, The default is 'E'.
+    varrange  : (float, float), range of the pdf variable
+    bins      : int, number of bins of the histograms to create the pdfs
 
     Returns
     -------
-    anadata   : DataFrame, the selected data events
-    anamcs    : tuple(DataFrame), the selected mc events (to get the pdfs)
-    effs      : tuple(float), selection efficiencies in the different samples
+    fit       : functio(DataFrame) to fit data to the Composite PDF
 
     """
     
-    effs    = [efficiencies(mc, varnames, varranges)[0][-1]  for mc in mcs]
-    anamcs  = [mc[selection(mc, varnames[:mc_level], varranges[:mc_level])] for mc in mcs]
-    anadata = data[selection(data, varnames, varranges)]
+    refnames  = varnames  if refnames  == [] else refnames
+    refranges = varranges if refranges == [] else refranges
+        
+    # expected number of events for each mc sample
+    effs            = [ut.selection_efficiency(mc, varnames, varranges)[0] for mc in mcs]
+    nevts_exp       = effs * np.array(nevts)
+   
     
-    if (verbose):
-        print('selection variables  :', varnames)
-        print('selection ranges     :', varranges)
-        print('selection mc samples :', varnames[:mc_level])
-        print('data size            :', len(anadata))
-        print('mc sizes             :', [len(mc) for mc in anamcs])
-        print('efficiencies         : {:6.2f}, {:1.2e}, {:1.2e}'.format(* effs))
+    ell = get_ell(mcs, refnames, refranges)
+        
+    def _fit(data):
+            
+        # select the data
+        datana  = ut.selection_sample(data, varnames, varranges)
+
+        # fit the energy values of the data 
+        values  = datana[varname].values
+        result  = ell.best_estimate(values, *nevts_exp)
+            
+        return result, values, ell, nevts_exp
+
+    return _fit
+            
     
-    return anadata, anamcs, effs
-
-
-def plot_contributions(data,
-                       mcs,
-                       ns,
+def prepare_fit_simell(mcs, 
+                       nevts,
+                       varnames,
+                       varranges,
+                       refnames,
+                       refranges,
+                       connames,
+                       conranges,
                        varname  = 'E',
                        varrange = erange,
-                       nbins    = 80,
-                       ssamples = ssamples):
-    
-    # plot data
-    counts, bins = np.histogram(data[varname], nbins, range = varrange)
-    cbins = 0.5 * (bins[1:] + bins[:-1])
-    esel  = counts > 0
-    ecounts = np.sqrt(counts)
-    plt.errorbar(cbins[esel], counts[esel], yerr = ecounts[esel], marker = 'o', ls = '', label = 'data');
-    plt.ylabel('counts')
-        
-    #ax = plt.gca().twinx()
-    i = 0
-    utots = np.zeros(len(counts))
-    for n, mc in zip(ns, mcs):
-        ucounts, _   = np.histogram(mc[varname], bins)
-        ucounts      = n * ucounts/np.sum(ucounts)
-        utots        += ucounts
-        plt.plot(cbins, ucounts, label = ssamples[i]);
-        i += 1
-    plt.plot(cbins, utots, label = 'total');
-    plt.grid(); plt.title(varname), plt.legend();
-    return
-
-
-def ana_experiment(data,
-                   mcs,
-                   nevts,
-                   unevts    = None,
-                   varnames  = varnames[:-1],
-                   varranges = varranges[:-1],
-                   mc_level  = -1,
-                   varname   = 'E',
-                   varrange  = erange,
-                   bins      = 150,
-                   verbose   = True): 
+                       bins     = 100):
     """
-
-    perform the analysis
-
+    
     Parameters
     ----------
-    data   : DataFrame, data
-    mcs    : tuple(DataFrame), mc data (bb, Bi, Tl)
-    nevts  : tuple(float), number of expected total events of each sample
-    unevts : tuple(float), optional, uncertainties of the expected total events in each sample
-        if provided, the fit is constrained
-    varnames  : tuple(strig), list of the variables of the selection
-    varranges : tuple( (float, float)), list with the selection variable ranges
-    mc_level  : int, optional, the mc samples for the pdfs use a 'downscaled' selection 
-    varname   : float, variable of the fit. The default is 'E'.
-    varrange  : (float, float), range of the fit. The default is erange.
-    bins      : int, optional, number of bins. The default is 150.
-    verbose   : bool, optional, print out and plots. The default is True.
+    mcs       : tuple(DataFrames), data frames of the mc samples
+    varnames  : tuple(str), list of the variables of the selection
+    varranges : tuple((float, float)), list of the ranges of the selection
+    refnames  : tuple(str), list of the variables of the selection to create the signal pdfs.
+    refranges : tuple((float, float)), list of the ranges of the selection to create the signal pdfs.
+    connames  : tuple(str), list of the variables of the selection to create the control pdfs.
+    conranges : tuple((float, float)), list of the ranges of the selection to create the control pdfs.
+    varname   : str, name of the variable of the pdf, The default is 'E'.
+    varrange  : (float, float), range of the pdf variable
+    bins      : int, number of bins of the histograms to create the pdfs
 
     Returns
     -------
-    result    : object, result of the fit with the LL, and the estimated parameters
-    enes      : np.array(float), data values entered into the fit
-    ell       : object, extended LL fit object, access to the loglike
-    pdfs      : tuple(object), pdf objects associated to each sample
+    fit       : functio(DataFrame) to fit data to the Composite PDF
 
     """
     
-    anadata, anamcs, effs = ana_samples(data, mcs, varnames, varranges, 
-                                        mc_level = mc_level, verbose = verbose)
-    nns  = [eff * ni  for eff, ni  in zip(effs, nevts)]
-    unns = None if unevts == None else [eff * uni for eff, uni in zip(effs, unevts)]
-    result, enes, ell  = fit_ell(anadata, anamcs, nns, unns,
-                                 varname = varname, varrange = varrange, 
-                                 bins = bins)
     
-    if (verbose):
-        print('Initial       Events : {:6.2f}, {:6.2f}, {:6.2f}'.format(* nns))
-        if (unns != None):
-            print('Uncertainties Events : {:6.2f}, {:6.2f}, {:6.2f}'.format(*unns))
-        print('Fit success          : ', result.success)
-        print('Estimated     Events : {:6.2f}, {:6.2f}, {:6.2f}'.format(*result.x))
-        plot_fit_ell(enes, result.x, ell)
     
-    return result, enes, ell
+    effs_signal     = np.array([ut.selection_efficiency(mc, varnames, varranges)[0] for mc in mcs])
+    effs_control    = np.array([ut.selection_efficiency(mc, connames, conranges)[0] for mc in mcs])
+    nevts_exp       = effs_signal * nevts
+    factor_control  = effs_control/effs_signal
+
+    # generate the ELL instace to fit the energy distribution to the energy distribution of the three mc samples
+    ell_signal      = get_ell(mcs, refnames, refranges)
+    ell_control     = get_ell(mcs, connames, conranges)
+    ell             = efit.SimulExtComPDF(ell_signal, ell_control, factor_control)
+
+        
+    def _fit(data):
+        
+        data_signal  = ut.selection_sample(data, varnames, varranges)
+        data_control = ut.selection_sample(data, connames, conranges)
+
+        values       = (data_signal[varname].values, data_control[varname].values)
+        result       = ell.best_estimate(values, *nevts_exp)
+        
+        return result, values, ell, nevts_exp
+
+    return _fit
+            
+
+
+def tmu_scan(values, pars, ell, sizes = 2., nbins = 50):
+    """
+    
+    So a -2 loglike scan in the parameters
+
+    Parameters
+    ----------
+    values : data, 
+    pars   : np.array, parameters
+    ell    : a ComPDF object, musht have a loglike method
+    sizes  : sizes of the range of the parameters to scan
+    nbins  : int, number of points in the scan
+
+    Returns
+    -------
+    
+    nis    : list of the scan points of each parameter
+    tmus   : -2loglike values of the scan
+
+    """
+
+    
+    npars  = len(pars)
+    sizes = npars * (sizes,) if isinstance(sizes, float) else sizes
+    
+    def n_scan(n, size = 2.):
+        n0 = max(0., n - size * np.sqrt(n))
+        n1 = n + size * np.sqrt(n) if n > 1 else 20
+        return np.linspace(n0, n1, nbins)
+    
+    tmus = []
+    for i in range(npars):
+        nis   = n_scan(pars[i], sizes[i])
+        itmus  = efit.llike_scan(values, ell, pars, nis, i)
+        tmus.append((nis,itmus))
+        
+    return ut.list_transpose(tmus)
+
+
+def tmu_values(values, par_est, ell, par_exp):
+    """
+    
+    Compute generic tmu-values for hypothesis testing
+
+    Parameters
+    ----------
+    values  : data
+    par_est : np.array(float), estimated parameters
+    ell     : PDF object, it must have a liglike method, loglike(data, *pars)
+    par_exp : np.arrayt(float), expected parameters
+        DESCRIPTION.
+
+    Returns
+    -------
+    tmun  : tmu(mu, muhat)
+    tmu   : tmu(mu, nuhat(x), muhat), only for the first parameter
+    qmu   : qmu(mu, nuhat(x), muhat), test the alternative hypothesis
+    q0    : qmu(0, nuhat(x), muhat), test the null hypothesis
+
+    """
+        
+    tmun = efit.tmu(values, ell, par_est, par_exp, -1) 
+    tmu  = efit.tmu(values, ell, par_est, par_exp[0], 0) 
+    q0   = efit.tmu(values, ell, par_est, 0., 0)        
+    qmu  = tmu if par_est[0] < par_exp[0] else 0
+    
+    return tmun, tmu, qmu, q0
     
 
-#----------------
-#
-# def test_pdf(dat, mcs, varname, bins, varrange, ssamples = ssamples):
-#     ene  = dat[varname].values
-#     ene  = ene[ut.in_range(ene, erange)]
-#     print('events', len(ene))
-#
-#     subplot = pltext.canvas(2)
-#
-#     subplot(1)
-#     pltext.hist(ene, bins, label = 'blind data');
-#     plt.xlabel(varname);
-#
-#     subplot(2)
-#     for i, mc in enumerate(mcs):
-#         pltext.hist(mc[varname], bins, range = erange, density = True, label = ssamples[i])
-#     plt.xlabel(varname);
+#---- MC experiments
+
+
+ExpResult = namedtuple('ExpResult', 
+                       ('nbb', 'nBi', 'nTl', 'nbb0', 'nBi0', 'nTl0', 
+                        'tmun', 'tmu', 'qmu', 'q0'))
+
+
+def prepare_experiment_ell(mcs, nevts, *args, **kargs): 
+    """
+    Return a function that generates and analyzes data of a random mc experiment with nevts.
+    Fit the data into the signal region
+    
+    Parameters
+    ----------
+    mcs   : tuple(DataFrames), list of MC DataFrame samples
+    nevts : np.array(float), number of events in each sample
+    *args : arguments of prepapre_fit_ell
+    **kargs : key arguments of prepare_fit_simell
+
+    Returns
+    -------
+    exp   : function, that generates and analyzes data of a random mc experiment
+
+    """
+
+    fit   = prepare_fit_ell(mcs, nevts, *args, **kargs)
+    return _prepare_experiment(mcs, nevts, fit)
+
+
+def prepare_experiment_simell(mcs, nevts, *args, **kargs): 
+    """
+    Return a function that generates and analyzes data of a random mc experiment with nevts.
+    Fit data to Simulaneous signal and control samples
+    
+    Parameters
+    ----------
+    mcs   : tuple(DataFrames), list of MC DataFrame samples
+    nevts : np.array(float), number of events in each sample
+    *args : arguments of prepapre_fit_simell
+    **kargs : key arguments of prepare_fit_simell
+
+    Returns
+    -------
+    exp   : function, that generates and analyzes data of a random mc experiment
+
+    """
+
+
+    fit   = prepare_fit_simell(mcs, nevts, *args, **kargs)
+    return _prepare_experiment(mcs, nevts, fit)
+
+    
+def _prepare_experiment(mcs, nevts, fit):
+    
+    def _experiment():
+        
+        mcdata = generate_mc_experiment(mcs, nevts)
+        
+        result, values, ell, nevts_exp = fit(mcdata)
+        
+        if (not result.success): 
+            return result.success, mcdata, None
+
+        nevts_est = result.x    
+        tmuvals  = tmu_values(values, nevts_est, ell, nevts_exp)
+        eresult  = ExpResult(*nevts_est, *nevts_exp, *tmuvals)
+        
+        return result.success, mcdata, eresult
+    
+    return _experiment
+
+def run(experiment, size = 1):
+    """
+    
+    run the experiment function ntimes (size), returns a dataFrame with rhe results-
+
+    Parameters
+    ----------
+    experiment : function
+    size       : int, number of random experiments to generate and analyze. The default is 1.
+
+    Returns
+    -------
+    df         : DataFrame, with the resutls of the analysis of the size experiments
+
+    """
+    
+    eresults = []
+    for i in range(size):
+        success, _, eresult = experiment()
+        if (success): eresults.append(eresult)
+            
+    eresults = ut.list_transpose(eresults)
+    df       = ut.list_to_df(eresults, ExpResult._fields)
+    
+    return df      
+
+
+
+
+
+#--------------------------
+
+# def ana_samples(data, 
+#                 mcs, 
+#                 varnames   = varnames[:-1],
+#                 varranges = varranges[:-1],
+#                 mc_level   = -1,
+#                 verbose    = True):
+#     """
+    
+#     Return the sample to analysis after a selection in the variables *varnames* 
+#     in ranges *varranges*
+
+#     Parameters
+#     ----------
+#     data      : DataFrame, data
+#     mcs       : tuple(DataFrame), mc data frames for the different samples
+#     varnames  : tuple(float), list of the variables names of the selection
+#     varranges : tuple( (float, float)), list of the variable ranges of the selection
+#     mc_level  : int, reduce the selection for mc samples to get more stats for the pdfs
+#                 a given level, default = -1
+#     verbose   : bool, print into
+
+#     Returns
+#     -------
+#     anadata   : DataFrame, the selected data events
+#     anamcs    : tuple(DataFrame), the selected mc events (to get the pdfs)
+#     effs      : tuple(float), selection efficiencies in the different samples
+
+#     """
+    
+#     effs    = [efficiencies(mc, varnames, varranges)[0][-1]  for mc in mcs]
+#     anamcs  = [mc[selection(mc, varnames[:mc_level], varranges[:mc_level])] for mc in mcs]
+#     anadata = data[selection(data, varnames, varranges)]
+    
+#     if (verbose):
+#         print('selection variables  :', varnames)
+#         print('selection ranges     :', varranges)
+#         print('selection mc samples :', varnames[:mc_level])
+#         print('data size            :', len(anadata))
+#         print('mc sizes             :', [len(mc) for mc in anamcs])
+#         print('efficiencies         : {:6.2f}, {:1.2e}, {:1.2e}'.format(* effs))
+    
+#     return anadata, anamcs, effs
+
+
+
+# def ana_experiment(data,
+#                    mcs,
+#                    nevts,
+#                    unevts    = None,
+#                    varnames  = varnames[:-1],
+#                    varranges = varranges[:-1],
+#                    mc_level  = -1,
+#                    varname   = 'E',
+#                    varrange  = erange,
+#                    bins      = 150,
+#                    verbose   = True): 
+#     """
+
+#     perform the analysis
+
+#     Parameters
+#     ----------
+#     data   : DataFrame, data
+#     mcs    : tuple(DataFrame), mc data (bb, Bi, Tl)
+#     nevts  : tuple(float), number of expected total events of each sample
+#     unevts : tuple(float), optional, uncertainties of the expected total events in each sample
+#         if provided, the fit is constrained
+#     varnames  : tuple(strig), list of the variables of the selection
+#     varranges : tuple( (float, float)), list with the selection variable ranges
+#     mc_level  : int, optional, the mc samples for the pdfs use a 'downscaled' selection 
+#     varname   : float, variable of the fit. The default is 'E'.
+#     varrange  : (float, float), range of the fit. The default is erange.
+#     bins      : int, optional, number of bins. The default is 150.
+#     verbose   : bool, optional, print out and plots. The default is True.
+
+#     Returns
+#     -------
+#     result    : object, result of the fit with the LL, and the estimated parameters
+#     enes      : np.array(float), data values entered into the fit
+#     ell       : object, extended LL fit object, access to the loglike
+#     pdfs      : tuple(object), pdf objects associated to each sample
+
+#     """
+    
+#     anadata, anamcs, effs = ana_samples(data, mcs, varnames, varranges, 
+#                                         mc_level = mc_level, verbose = verbose)
+#     nns  = [eff * ni  for eff, ni  in zip(effs, nevts)]
+#     unns = None if unevts == None else [eff * uni for eff, uni in zip(effs, unevts)]
+#     result, enes, ell  = fit_ell(anadata, anamcs, nns, unns,
+#                                  varname = varname, varrange = varrange, 
+#                                  bins = bins)
+    
+#     if (verbose):
+#         print('Initial       Events : {:6.2f}, {:6.2f}, {:6.2f}'.format(* nns))
+#         if (unns != None):
+#             print('Uncertainties Events : {:6.2f}, {:6.2f}, {:6.2f}'.format(*unns))
+#         print('Fit success          : ', result.success)
+#         print('Estimated     Events : {:6.2f}, {:6.2f}, {:6.2f}'.format(*result.x))
+#         plot_fit_ell(enes, result.x, ell)
+    
+#     return result, enes, ell, np.array(effs)
+    

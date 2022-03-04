@@ -1,6 +1,55 @@
 import numpy             as np
+import pandas as pd
+
 from functools import reduce
 #from collections.abc import Iterable
+
+#--- with lists
+
+def list_transpose(ll):
+    """
+    
+    transpose a list m-length with n-length each item
+    returns a list of n-items each of m-lenght
+
+    Parameters
+    ----------
+    ll : list of lists
+
+    Returns
+    -------
+    lt : list of lists
+
+    """
+    m = len(ll[0])
+    lt = [[x[i] for x in ll] for i in range(m)]
+    return lt
+
+
+def list_to_df(ll, names):
+    """
+    
+    Converts a list of list into a pandas DataFrame
+
+    Parameters
+    ----------
+    ll    : list(list), contents of the DF colums
+    names : list(str), name of the DF columnes
+
+    Returns
+    -------
+    df    : DataFrame
+    """
+
+    assert len(ll) == len(names), 'required same number of lists and names'    
+
+    df     = {}
+    for i, name in enumerate(names): 
+        df[name] = ll[i]
+        
+    df = pd.DataFrame(df)
+    return df
+
 
 
 #--- general utilies
@@ -46,29 +95,6 @@ def centers(xs : np.array) -> np.array:
     return 0.5* ( xs[1: ] + xs[: -1])
 
 
-# def arscale(x, scale = 1.):
-#     """ return an array between [0., 1.]
-#     inputs:
-#         x    : np.array,
-#         scale: float (1.)
-#     returns:
-#         np.arry with scaled balues, [0, scale]
-#     """
-#     xmin, xmax = np.min(x), np.max(x)
-#     rx = scale * (x - xmin)/(xmax - xmin)
-#     return rx
-#
-#
-# def arstep(x, step, delta = False):
-#     """ returns an array with bins of step size from x-min to x-max (inclusive)
-#     inputs:
-#         x    : np.array
-#         step : float, step-size
-#     returns:
-#         np.array with the bins with step size
-#     """
-#     delta = step/2 if delta else 0.
-#     return np.arange(np.min(x) - delta, np.max(x) + step + delta, step)
 
 
 def stats(vals : np.array, range : tuple = None):
@@ -101,43 +127,14 @@ def efficiency(sel, n = None):
     ueff = np.sqrt(eff * (1- eff) / n)
     return eff, ueff
 
+#-------
 
-def selection(df, varname, varrange):
-    """ apply the selection df.varname in a range, varange
+def selection(df, varname, varrange, oper = np.logical_and):
+    """ apply the selection on a DataFrame requirend that the variable(s) are in the range
+    
     inputs:
         df       : dataFrame
-        varname  : str, name of the variable int he DF
-        varrange : tuple(float, float), range of the selection, all (-np.inf, np.inf)
-    returns:
-        sel      : np.array(bool) same same of DF with True/False
-                   if the item fulfull variable value (varname) inside the range (varrange)
-    """
-    sel = in_range(df[varname].values, varrange)
-    return sel
-
-
-def selections(df, varnames, varranges):
-    """ appy a list of selections in order in a data-frame
-    inputs:
-        df        : DataFrame
-        varnames  : tuple(str), list of the variables of the selections
-        varranges : tuple(float, float), range of the variables in the selection
-    returns:
-        sels: tuple(np.array(bool)), tuple with the selections applied in series
-    """
-    sel, sels =  None, []
-    for i, varname in enumerate(varnames):
-        isel = selection(df, varname, varranges[i])
-        sel  = isel if sel is None else sel & isel
-        sels.append(sel)
-    return sels
-
-
-def _selection(df, varname, varrange, oper = np.logical_and):
-    """ apply the selection df.varname in a range, varange
-    inputs:
-        df       : dataFrame
-        varname  : str, name of the variable int he DF
+        varname  : str or list(str), name of list of names of the variable s 
         varrange : tuple(float, float), range of the selection, all (-np.inf, np.inf)
         oper     : bool operation, default and
     returns:
@@ -149,14 +146,51 @@ def _selection(df, varname, varrange, oper = np.logical_and):
     if _isiter(varname):
         assert len(varname) == len(varrange), \
             'required same length of variables and ranges'
-        sels = [_selection(df, ivar, ivarran) for ivar, ivarran \
+        sels = [selection(df, ivar, ivarran) for ivar, ivarran \
                       in zip(varname, varrange)]
         return reduce(oper, sels)
     
     return in_range(df[varname], varrange)
     
 
-def _select_sample(df, varname, varrange):
+def selection_efficiency(df, varname, varrange):
     
-    return df[_selection(df, varname, varrange)]
+    """
+    Computes the efficiency of a selection in a DataFrame
+
+    Parameters
+    ----------
+    df       : DataFrame,
+    varname  : str or list(str), name of list of names of the variables of the selection
+    varrange : (float, float) or list(float, float), range or ranges of the variables of the selection
+
+    Returns
+    -------
+    eff      : (float, float), efficiency and uncertanty on the efficiency
+
+    """
+    return efficiency(selection(df, varname, varrange))
+
+
+def selection_sample(df, varname, varrange):
+    """
+    
+    return a sample of a DataFrame with the events that pass the selection
+    
+
+    Parameters
+    ----------
+    df       : DataFrame 
+    varname  : str or list(str), name of list of names of the variable o f the selection
+        DESCRIPTION.
+    varrange : (float, float) or list(float, float), range or list of ranges of the variable sof the selection
+        DESCRIPTION.
+
+    Returns
+    -------
+    df      ; DataFrame
+
+    """
+    
+    return df[selection(df, varname, varrange)]
 
